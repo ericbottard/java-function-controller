@@ -73,6 +73,8 @@ public class FunctionMonitor {
 	/** Keeps track of the last time this decided to scale down (but not yet effective). */
 	private final Map<String, Long> scaleDownStartTimes = new ConcurrentHashMap<>();
 
+	/** Keeps track of the sum of end positions for all partitions of a scaling-to-0 function's input topic */
+	private final Map<String, Long> scaleDownPositionSums = new ConcurrentHashMap<>();
 
 
 	@Autowired
@@ -212,6 +214,11 @@ public class FunctionMonitor {
 							e -> e.getValue().stream()
 									.mapToLong(LagTracker.Offsets::getLag)
 									.max().getAsLong()));
+			Map<String, Long> positionSums = offsets.entrySet().stream()
+					.collect(Collectors.toMap(
+							e -> e.getKey().group,
+							e -> e.getValue().stream()
+									.mapToLong(LagTracker.Offsets::getEnd).sum()));
 			functions.values().stream().forEach(
 					f -> {
 						String name = f.getMetadata().getName();
@@ -220,6 +227,7 @@ public class FunctionMonitor {
 							idleTimeout = DEFAULT_IDLE_TIMEOUT;
 						}
 
+						long currentPositionSum = positionSums.get(name);
 						int desired = computeDesiredReplicaCount(lags, f);
 						int current = actualReplicaCount.computeIfAbsent(name, k -> 0);
 
@@ -234,7 +242,11 @@ public class FunctionMonitor {
 							logger.debug(
 									"Want {} for {}. Rounded to {} [target = {}]. (Deployment currently set to {})",
 									interpolation, name, rounded, desired, current);
-							if (rounded != current) {
+							if (current == 0 && desired > 0) {
+								// Special case when scaling from 0
+								deployer.deploy(f, 1);
+							}
+							else if (rounded != current) {
 								// Special case when going back to 0
 								if (rounded == 0) {
 									Long start = scaleDownStartTimes.get(name);
@@ -242,12 +254,20 @@ public class FunctionMonitor {
 									if (start == null) {
 										start = now;
 										scaleDownStartTimes.put(name, now);
+										scaleDownPositionSums.put(name, currentPositionSum);
 									} else {
 										if (now >= start + idleTimeout) {
 											scaleDownStartTimes.remove(name);
 											deployer.deploy(f, rounded);
 										} else {
-											logger.debug("Waiting another {}ms to scale back down to 0 for {}", start + idleTimeout - now, name);
+											if (currentPositionSum > scaleDownPositionSums.get(name)) {
+												// still active, reset the clock
+												scaleDownStartTimes.remove(name);
+												scaleDownPositionSums.remove(name);
+											}
+											else {
+												logger.debug("Waiting another {}ms to scale back down to 0 for {}", start + idleTimeout - now, name);
+											}
 										}
 									}
 								} else {
