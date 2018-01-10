@@ -36,12 +36,10 @@ glide.lock: glide.yaml
 	glide up -v
 
 gen-mocks:
-	mockgen -destination=pkg/controller/mocks/controller_mocks.go -package=mocks \
-	  github.com/projectriff/function-controller/pkg/controller \
-	  LagTracker,Deployer
-	mockgen -destination=pkg/controller/mocks/thirdparty_mocks.go -package=mocks \
-	  github.com/projectriff/kubernetes-crds/pkg/client/informers/externalversions/projectriff/v1 \
-	  TopicInformer,FunctionInformer
+	mockery -name 'TopicInformer|FunctionInformer' -dir vendor/github.com/projectriff/kubernetes-crds/pkg/client/informers/externalversions/projectriff/v1
+	mockery -name 'SharedIndexInformer' -dir vendor/k8s.io/client-go/tools/cache
+	mockery -name 'DeploymentInformer' -dir vendor/k8s.io/client-go/informers/extensions/v1beta1
+	mockery -name 'LagTracker|Deployer' -dir pkg/controller
 
 clean:
 	rm -f $(OUTPUT)
