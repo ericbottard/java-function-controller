@@ -61,7 +61,8 @@ type scalingPostProcessor func(replicaCounts, activityCounts) (replicaCounts, ac
 type ctrl struct {
 	topicsAddedOrUpdated      chan *v1.Topic
 	topicsDeleted             chan *v1.Topic
-	functionsAddedOrUpdated   chan *v1.Function
+	functionsAdded            chan *v1.Function
+	functionsUpdated          chan *v1.Function
 	functionsDeleted          chan *v1.Function
 	deploymentsAddedOrUpdated chan *v1beta1.Deployment // TODO investigate deprecation -> apps?
 	deploymentsDeleted        chan *v1beta1.Deployment // TODO investigate deprecation -> apps?
@@ -106,8 +107,12 @@ func (c *ctrl) Run(stopCh <-chan struct{}) {
 			c.onTopicAddedOrUpdated(topic)
 		case topic := <-c.topicsDeleted:
 			c.onTopicDeleted(topic)
-		case function := <-c.functionsAddedOrUpdated:
-			c.onFunctionAddedOrUpdated(function)
+		case function := <-c.functionsAdded:
+			c.onFunctionAdded(function)
+		case old := <-c.functionsUpdated:
+			new := <-c.functionsUpdated
+			c.onFunctionDeleted(old)
+			c.onFunctionAdded(new)
 		case function := <-c.functionsDeleted:
 			c.onFunctionDeleted(function)
 		case deployment := <-c.deploymentsAddedOrUpdated:
@@ -141,7 +146,7 @@ func (c *ctrl) onTopicDeleted(topic *v1.Topic) {
 	delete(c.topics, tkey(topic))
 }
 
-func (c *ctrl) onFunctionAddedOrUpdated(function *v1.Function) {
+func (c *ctrl) onFunctionAdded(function *v1.Function) {
 	log.Printf("Function added: %v", function.Name)
 	c.functions[key(function)] = function
 	c.lagTracker.BeginTracking(Subscription{Topic: function.Spec.Input, Group: function.Name})
@@ -230,7 +235,8 @@ func New(topicInformer informersV1.TopicInformer,
 		topicsAddedOrUpdated:      make(chan *v1.Topic, 100),
 		topicsDeleted:             make(chan *v1.Topic, 100),
 		topicInformer:             topicInformer,
-		functionsAddedOrUpdated:   make(chan *v1.Function, 100),
+		functionsAdded:            make(chan *v1.Function, 100),
+		functionsUpdated:          make(chan *v1.Function, 100),
 		functionsDeleted:          make(chan *v1.Function, 100),
 		functionInformer:          functionInformer,
 		deploymentsAddedOrUpdated: make(chan *v1beta1.Deployment, 100),
@@ -266,12 +272,15 @@ func New(topicInformer informersV1.TopicInformer,
 		AddFunc: func(obj interface{}) {
 			fn := obj.(*v1.Function)
 			v1.SetObjectDefaults_Function(fn)
-			pctrl.functionsAddedOrUpdated <- fn
+			pctrl.functionsAdded <- fn
 		},
 		UpdateFunc: func(old interface{}, new interface{}) {
-			fn := new.(*v1.Function)
+			fn := old.(*v1.Function)
 			v1.SetObjectDefaults_Function(fn)
-			pctrl.functionsAddedOrUpdated <- fn
+			pctrl.functionsUpdated <- fn
+			fn = new.(*v1.Function)
+			v1.SetObjectDefaults_Function(fn)
+			pctrl.functionsUpdated <- fn
 		},
 		DeleteFunc: func(obj interface{}) {
 			fn := obj.(*v1.Function)
